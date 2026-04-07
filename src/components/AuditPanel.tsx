@@ -1,7 +1,16 @@
 "use client";
 
-import { useState } from "react";
-import { ChevronDown, ChevronRight, Eye, GitCompare, Lock, ListTodo } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Eye,
+  GitCompare,
+  Lock,
+  ListTodo,
+  Maximize2,
+  X,
+} from "lucide-react";
 import { useProjectStore } from "@/lib/store";
 import type { AuditManifest, AuditDiffEntry, FrozenSnapshot } from "@/lib/qualitative/types";
 
@@ -32,6 +41,152 @@ function Section({
   );
 }
 
+function PromptFullscreenModal({
+  open,
+  onClose,
+  manifest,
+}: {
+  open: boolean;
+  onClose: () => void;
+  manifest: AuditManifest;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-stretch justify-center p-0 sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="prompt-modal-title"
+    >
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/60 backdrop-blur-[1px]"
+        aria-label="关闭"
+        onClick={onClose}
+      />
+      <div className="relative z-[101] flex h-full max-h-[100dvh] w-full max-w-6xl flex-col bg-white shadow-2xl dark:bg-zinc-950 dark:ring-1 dark:ring-zinc-800 sm:h-auto sm:max-h-[min(92vh,calc(100dvh-2rem))] sm:rounded-xl sm:my-auto">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-zinc-200 px-4 py-3 dark:border-zinc-800">
+          <div>
+            <h2 id="prompt-modal-title" className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              完整提示词 — {manifest.step}
+            </h2>
+            <p className="mt-0.5 text-xs text-zinc-500">
+              {manifest.model} · {manifest.timestamp}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-2 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            aria-label="关闭"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-hidden flex flex-col gap-0 sm:flex-row sm:gap-px sm:bg-zinc-200 dark:sm:bg-zinc-800">
+          <section className="flex min-h-0 flex-1 flex-col border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900/40 sm:border-b-0">
+            <h3 className="shrink-0 border-b border-zinc-200 bg-white px-4 py-2 text-xs font-medium text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+              系统提示
+            </h3>
+            <pre className="min-h-[40vh] flex-1 overflow-auto whitespace-pre-wrap p-4 text-xs leading-relaxed text-zinc-800 dark:text-zinc-200 sm:min-h-0">
+              {manifest.system_prompt}
+            </pre>
+          </section>
+          <section className="flex min-h-0 flex-1 flex-col bg-zinc-50 dark:bg-zinc-900/40">
+            <h3 className="shrink-0 border-b border-zinc-200 bg-white px-4 py-2 text-xs font-medium text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+              用户提示
+            </h3>
+            <pre className="min-h-[40vh] flex-1 overflow-auto whitespace-pre-wrap p-4 text-xs leading-relaxed text-zinc-800 dark:text-zinc-200 sm:min-h-0">
+              {manifest.user_prompt}
+            </pre>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ManifestPromptDisclosure({ manifest }: { manifest: AuditManifest }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const closeFullscreen = useCallback(() => setFullscreen(false), []);
+
+  return (
+    <div className="mt-2 border-t border-zinc-200 pt-2 dark:border-zinc-700">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 rounded-md px-1 py-1.5 text-left text-sm text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+      >
+        {expanded ? (
+          <ChevronDown className="h-4 w-4 shrink-0" aria-hidden />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0" aria-hidden />
+        )}
+        <span className="font-medium">查看完整提示词</span>
+        <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
+          （系统提示 + 用户提示）
+        </span>
+      </button>
+      {expanded && (
+        <div className="mt-2 space-y-2 pl-1">
+          <p className="text-[11px] leading-snug text-zinc-500 dark:text-zinc-400">
+            侧边栏空间有限，请使用全屏查看长提示词；也可在此快速预览前几行。
+          </p>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div>
+              <p className="mb-1 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">系统提示（预览）</p>
+              <pre className="max-h-28 overflow-y-auto rounded-md bg-zinc-100 p-2 text-[11px] leading-relaxed whitespace-pre-wrap text-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+                {manifest.system_prompt.slice(0, 800)}
+                {manifest.system_prompt.length > 800 ? "…" : ""}
+              </pre>
+            </div>
+            <div>
+              <p className="mb-1 text-[11px] font-medium text-zinc-600 dark:text-zinc-400">用户提示（预览）</p>
+              <pre className="max-h-28 overflow-y-auto rounded-md bg-zinc-100 p-2 text-[11px] leading-relaxed whitespace-pre-wrap text-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+                {manifest.user_prompt.slice(0, 800)}
+                {manifest.user_prompt.length > 800 ? "…" : ""}
+              </pre>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setFullscreen(true)}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm font-medium text-emerald-800 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-200 dark:hover:bg-emerald-900/40"
+          >
+            <Maximize2 className="h-4 w-4 shrink-0" aria-hidden />
+            全屏查看完整提示词
+          </button>
+        </div>
+      )}
+      <PromptFullscreenModal
+        open={fullscreen}
+        onClose={closeFullscreen}
+        manifest={manifest}
+      />
+    </div>
+  );
+}
+
 function ManifestView({ manifests }: { manifests: AuditManifest[] }) {
   if (manifests.length === 0)
     return <p className="text-sm text-zinc-400 py-2">暂无运行记录</p>;
@@ -56,25 +211,7 @@ function ManifestView({ manifests }: { manifests: AuditManifest[] }) {
             {m.temperature !== undefined && ` | temperature: ${m.temperature}`}
             {m.max_output_tokens !== undefined && ` | max_output_tokens: ${m.max_output_tokens}`}
           </div>
-          <details className="mt-1">
-            <summary className="cursor-pointer text-emerald-600 dark:text-emerald-400 hover:underline">
-              查看完整提示词
-            </summary>
-            <div className="mt-2 space-y-2">
-              <div>
-                <p className="font-medium mb-1">系统提示</p>
-                <pre className="bg-zinc-100 dark:bg-zinc-900 p-2 rounded text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">
-                  {m.system_prompt}
-                </pre>
-              </div>
-              <div>
-                <p className="font-medium mb-1">用户提示</p>
-                <pre className="bg-zinc-100 dark:bg-zinc-900 p-2 rounded text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">
-                  {m.user_prompt}
-                </pre>
-              </div>
-            </div>
-          </details>
+          <ManifestPromptDisclosure manifest={m} />
         </div>
       ))}
     </div>
