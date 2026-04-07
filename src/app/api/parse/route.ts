@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { parseDocxToSegments } from "@/lib/qualitative/parseDocx";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function POST(req: Request) {
   try {

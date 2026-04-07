@@ -17,7 +17,7 @@ import {
   type ValidationWarning,
 } from "@/lib/qualitative/validation";
 import JSZip from "jszip";
-import type { OpenCode, AxialCode, FrozenSnapshot } from "@/lib/qualitative/types";
+import type { OpenCode, AxialCode, AuditDiffEntry, FrozenSnapshot } from "@/lib/qualitative/types";
 
 /** 按输出时间年月日时分秒命名：coding_package_YYYY-MM-DD_HHmmss.zip */
 function formatExportZipFilename(): string {
@@ -72,6 +72,11 @@ export function CodingWorkflow() {
   const [error, setError] = useState<string | null>(null);
   const [diagramImageUrl, setDiagramImageUrl] = useState<string | null>(null);
   const [warnings, setWarnings] = useState<ValidationWarning[]>([]);
+  const [batchProgress, setBatchProgress] = useState<{
+    completed: number;
+    total: number;
+    codesCount: number;
+  } | null>(null);
 
   /** 与「清空工作区」同步：重置后清掉仅存在组件内的状态（框架图、校验提示等） */
   useEffect(() => {
@@ -80,12 +85,14 @@ export function CodingWorkflow() {
       setWarnings([]);
       setError(null);
       setLoading(null);
+      setBatchProgress(null);
     }
   }, [stage, segmentCount]);
 
   const runOpenCoding = async () => {
     setLoading("open");
     setError(null);
+    setBatchProgress(null);
     try {
       store.setStage("open_pending");
       store.updatePlan({
@@ -95,20 +102,66 @@ export function CodingWorkflow() {
         pending_steps: ["axial", "selective", "diagram"],
       });
 
-      const res = await fetch("/api/coding/open", {
+      const res = await fetch("/api/coding/open/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ segments: store.segments }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response stream");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let finalData: { codes: OpenCode[]; manifest: unknown } | null = null;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6);
+          try {
+            const evt = JSON.parse(json) as Record<string, unknown>;
+            if (evt.type === "progress") {
+              setBatchProgress({
+                completed: evt.completed as number,
+                total: evt.total as number,
+                codesCount: evt.codesCount as number,
+              });
+            } else if (evt.type === "done") {
+              finalData = {
+                codes: evt.codes as OpenCode[],
+                manifest: evt.manifest,
+              };
+            } else if (evt.type === "error") {
+              throw new Error(evt.message as string);
+            }
+          } catch (e) {
+            if (e instanceof SyntaxError) continue;
+            throw e;
+          }
+        }
+      }
+
+      if (!finalData) throw new Error("Stream ended without results");
 
       const oldCodes = store.openCodes;
-      const newCodes: OpenCode[] = data.codes;
+      const newCodes = finalData.codes;
       const diffs = computeDiffs(oldCodes, newCodes, "open_code_id", "open_coding");
 
       store.setOpenCodes(newCodes);
-      store.addManifest(data.manifest);
+      store.addManifest(finalData.manifest as Parameters<typeof store.addManifest>[0]);
       store.addDiffs(diffs);
 
       const openWarnings = validateOpenCodes(newCodes, store.segments);
@@ -126,6 +179,7 @@ export function CodingWorkflow() {
       store.setStage("parsed");
     } finally {
       setLoading(null);
+      setBatchProgress(null);
     }
   };
 
@@ -308,6 +362,72 @@ export function CodingWorkflow() {
     URL.revokeObjectURL(url);
   };
 
+  /* ---- User edit / delete helpers ---- */
+
+  const mkDiff = (
+    type: AuditDiffEntry["type"],
+    field: string,
+    id: string,
+    oldVal?: string,
+    newVal?: string,
+  ): AuditDiffEntry => ({
+    type,
+    field,
+    id,
+    old_value: oldVal,
+    new_value: newVal,
+    source: "user_edit",
+    timestamp: new Date().toISOString(),
+  });
+
+  const handleOpenUpdate = (index: number, field: string, value: string) => {
+    const codes = [...store.openCodes];
+    const old = codes[index];
+    const oldVal = (old as unknown as Record<string, unknown>)[field] as string;
+    codes[index] = { ...old, [field]: value };
+    store.setOpenCodes(codes);
+    store.addDiffs([mkDiff("modified", field, old.open_code_id, oldVal, value)]);
+  };
+
+  const handleOpenDelete = (index: number) => {
+    const codes = [...store.openCodes];
+    const removed = codes.splice(index, 1)[0];
+    store.setOpenCodes(codes);
+    store.addDiffs([mkDiff("removed", "open_coding", removed.open_code_id, JSON.stringify(removed))]);
+  };
+
+  const handleAxialUpdate = (index: number, field: string, value: string) => {
+    const codes = [...store.axialCodes];
+    const old = codes[index];
+    const oldVal = (old as unknown as Record<string, unknown>)[field] as string;
+    codes[index] = { ...old, [field]: value };
+    store.setAxialCodes(codes);
+    store.addDiffs([mkDiff("modified", field, old.axial_id, oldVal, value)]);
+  };
+
+  const handleAxialDelete = (index: number) => {
+    const codes = [...store.axialCodes];
+    const removed = codes.splice(index, 1)[0];
+    store.setAxialCodes(codes);
+    store.addDiffs([mkDiff("removed", "axial_coding", removed.axial_id, JSON.stringify(removed))]);
+  };
+
+  const handleSelectiveUpdate = (index: number, field: string, value: string) => {
+    const codes = [...store.selectiveCodes];
+    const old = codes[index];
+    const oldVal = (old as unknown as Record<string, unknown>)[field] as string;
+    codes[index] = { ...old, [field]: value };
+    store.setSelectiveCodes(codes);
+    store.addDiffs([mkDiff("modified", field, old.selective_id, oldVal, value)]);
+  };
+
+  const handleSelectiveDelete = (index: number) => {
+    const codes = [...store.selectiveCodes];
+    const removed = codes.splice(index, 1)[0];
+    store.setSelectiveCodes(codes);
+    store.addDiffs([mkDiff("removed", "selective_coding", removed.selective_id, JSON.stringify(removed))]);
+  };
+
   const stageIdx = [
     "idle",
     "parsed",
@@ -325,6 +445,30 @@ export function CodingWorkflow() {
       {error && (
         <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 text-sm text-red-700 dark:text-red-300">
           {error}
+        </div>
+      )}
+
+      {batchProgress && (
+        <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4 space-y-2">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-blue-700 dark:text-blue-300 font-medium">
+              正在编码：第 {batchProgress.completed}/{batchProgress.total} 批完成
+            </span>
+            <span className="text-blue-600 dark:text-blue-400">
+              已产出 {batchProgress.codesCount} 个编码
+            </span>
+          </div>
+          <div className="w-full bg-blue-200 dark:bg-blue-800 rounded-full h-2.5">
+            <div
+              className="bg-blue-600 dark:bg-blue-400 h-2.5 rounded-full transition-all duration-300"
+              style={{
+                width: `${Math.round((batchProgress.completed / batchProgress.total) * 100)}%`,
+              }}
+            />
+          </div>
+          <p className="text-xs text-blue-500 dark:text-blue-400">
+            {Math.round((batchProgress.completed / batchProgress.total) * 100)}% — 并发处理中
+          </p>
         </div>
       )}
 
@@ -399,7 +543,7 @@ export function CodingWorkflow() {
               </ActionButton>
             </div>
           </div>
-          <OpenCodingTable codes={store.openCodes} />
+          <OpenCodingTable codes={store.openCodes} onUpdate={handleOpenUpdate} onDelete={handleOpenDelete} />
         </section>
       )}
 
@@ -422,7 +566,7 @@ export function CodingWorkflow() {
               )}
             </div>
           </div>
-          <AxialCodingTable codes={store.axialCodes} />
+          <AxialCodingTable codes={store.axialCodes} onUpdate={handleAxialUpdate} onDelete={handleAxialDelete} />
         </section>
       )}
 
@@ -440,7 +584,7 @@ export function CodingWorkflow() {
               )}
             </div>
           </div>
-          <SelectiveCodingTable codes={store.selectiveCodes} />
+          <SelectiveCodingTable codes={store.selectiveCodes} onUpdate={handleSelectiveUpdate} onDelete={handleSelectiveDelete} />
         </section>
       )}
 

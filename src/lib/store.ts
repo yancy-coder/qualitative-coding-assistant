@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
+import { get, set, del } from "idb-keyval";
 import type {
   Segment,
   OpenCode,
@@ -12,6 +13,50 @@ import type {
   PipelinePlan,
   ProjectState,
 } from "@/lib/qualitative/types";
+
+const STORE_KEY = "qualitative-coding-store";
+
+const PROMPT_PERSIST_LIMIT = 500;
+
+function truncateManifest(m: AuditManifest): AuditManifest {
+  return {
+    ...m,
+    system_prompt:
+      m.system_prompt.length > PROMPT_PERSIST_LIMIT
+        ? m.system_prompt.slice(0, PROMPT_PERSIST_LIMIT) + "…[truncated]"
+        : m.system_prompt,
+    user_prompt:
+      m.user_prompt.length > PROMPT_PERSIST_LIMIT
+        ? m.user_prompt.slice(0, PROMPT_PERSIST_LIMIT) + "…[truncated]"
+        : m.user_prompt,
+  };
+}
+
+const idbStorage: StateStorage = {
+  getItem: async (name: string): Promise<string | null> => {
+    if (typeof indexedDB === "undefined") return null;
+    const val = await get(name);
+    if (val != null) return val as string;
+
+    if (typeof localStorage !== "undefined") {
+      const legacy = localStorage.getItem(name);
+      if (legacy) {
+        await set(name, legacy);
+        localStorage.removeItem(name);
+        return legacy;
+      }
+    }
+    return null;
+  },
+  setItem: async (name: string, value: string): Promise<void> => {
+    if (typeof indexedDB === "undefined") return;
+    await set(name, value);
+  },
+  removeItem: async (name: string): Promise<void> => {
+    if (typeof indexedDB === "undefined") return;
+    await del(name);
+  },
+};
 
 function defaultPlan(): PipelinePlan {
   return {
@@ -93,6 +138,29 @@ export const useProjectStore = create(
           pipelinePlan: defaultPlan(),
         }),
     }),
-    { name: "qualitative-coding-store" },
+    {
+      name: STORE_KEY,
+      storage: createJSONStorage(() => idbStorage),
+      partialize: (state) => {
+        const {
+          setSegments,
+          setOpenCodes,
+          setAxialCodes,
+          setSelectiveCodes,
+          setStage,
+          addManifest,
+          addDiffs,
+          addFrozenSnapshot,
+          updatePlan,
+          setFrameworkImageUrl,
+          reset,
+          ...data
+        } = state;
+        return {
+          ...data,
+          auditManifests: data.auditManifests.map(truncateManifest),
+        } as ProjectState & Actions;
+      },
+    },
   ),
 );
