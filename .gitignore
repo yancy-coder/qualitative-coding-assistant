@@ -19,6 +19,7 @@
 # misc
 .DS_Store
 *.pem
+.cursor
 
 # 本地导出与烟测输出（保留目录占位）
 /outputs/*
